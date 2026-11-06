@@ -184,11 +184,11 @@ textarea.cp{width:100%;min-height:110px;font:500 .85rem var(--f-mono);background
 'use strict';
 /* ====== CONFIG FIREBASE : à remplir (voir LISEZMOI.md) ====== */
 var FIREBASE_CONFIG={apiKey:'AIzaSyAEkP5MQGOGx-kzBPyXhoqEmdbOwTjBOy8',authDomain:'majestic-commande.firebaseapp.com',projectId:'majestic-commande',appId:'1:793270443068:web:20bfb46999cea678263739'};
-var COLLECTION='commande_majestic',META='commande_meta',LOGC='commande_log';
+var COLLECTION='commande_majestic',META='commande_meta',LOGC='commande_log',ARCH='commande_archive',LOSS='commande_pertes',LS_A='commande-archive-v1',LS_L='commande-pertes-v1',LS_O='cm-opts';
 var EMAIL_TEAM='equipe@commande-majestic.app',EMAIL_MGR='gerant@commande-majestic.app',EMAIL_ADM='admin@commande-majestic.app';
 /* ============================================================ */
 var LS='commande-buvette-v1';
-var S={pmode:'circuit',products:[],tab:'frigo',loaded:false,mode:'local',banner:'',confirm:null,copy:null,user:null,role:'',authErr:'',gateErr:'',authReady:false,setup:'ok',setupErr:'',setupBusy:false,adminExists:true,admErr:'',admBusy:false,log:[],pwOpen:false,pwMsg:null,pendingRender:false};
+var S={pmode:'circuit',products:[],tab:'frigo',loaded:false,mode:'local',banner:'',confirm:null,copy:null,user:null,role:'',authErr:'',gateErr:'',authReady:false,setup:'ok',setupErr:'',setupBusy:false,adminExists:true,opts:{prices:false,losses:false},arch:[],loss:[],lossFor:null,admErr:'',admBusy:false,log:[],pwOpen:false,pwMsg:null,pendingRender:false};
 var dbCol=null,auth=null,fdb=null,unsub=null,loadT=null,toastT=null;
 var timers={},writing={},dirty={},gone={};
 var CATALOG=[
@@ -228,17 +228,18 @@ function qty(n,u){return fmt(n)+' '+uname(u,n)}
 function norm(id,d){
   var skip=d.skip===true||d.stock==='skip';
   var sv=(d.seuil===null||d.seuil===undefined||d.seuil==='')?null:numF(d.seuil);sv=(sv!==null&&isFinite(sv)&&sv>=0)?Math.round(sv*1000)/1000:null;
+  var pr=(d.price===null||d.price===undefined||d.price==='')?null:numF(d.price);pr=(pr!==null&&isFinite(pr)&&pr>=0)?Math.round(pr*100)/100:null;
   var unit=String(d.unit||'unité').trim()||'unité';
   return {id:id,name:String(d.name||'Produit'),supplier:String(d.supplier||''),
-    need:num(d.need),stock:skip?0:num(d.stock),skip:skip,seuil:sv,pos:+d.pos||0,sPos:+d.sPos||0,checked:!!d.checked,
+    need:num(d.need),stock:skip?0:num(d.stock),skip:skip,seuil:sv,price:pr,pos:+d.pos||0,sPos:+d.sPos||0,checked:!!d.checked,
     rayon:String(d.rayon||''),unit:unit,orderUnit:String(d.orderUnit||'').trim()||unit,factor:num(d.factor)||1};
 }
 function clean(p){var o={};for(var k in p)if(k!=='id'&&k!=='skip')o[k]=p[k];if(p.skip)o.stock='skip';return o}
 function isMeas(u){return /^(kg|g|l|cl|ml)$/i.test(nz(u))}
-var base={},quiet={},logUnsub=null;
+var base={},quiet={},logUnsub=null,archUnsub=null,lossUnsub=null;
 var WHO={gerant:'gérant',equipe:'équipe',admin:'admin'};
-var LABEL={name:'nom',supplier:'fournisseur',need:'besoin',seuil:'seuil',unit:'compté en',orderUnit:'commandé en',factor:'conversion',rayon:'rayon'};
-function snapOf(p){var o={};['name','supplier','need','seuil','unit','orderUnit','factor','rayon','stock','skip','checked'].forEach(function(k){o[k]=p[k]});return o}
+var LABEL={name:'nom',supplier:'fournisseur',need:'besoin',seuil:'seuil',price:'prix',unit:'compté en',orderUnit:'commandé en',factor:'conversion',rayon:'rayon'};
+function snapOf(p){var o={};['name','supplier','need','seuil','price','unit','orderUnit','factor','rayon','stock','skip','checked'].forEach(function(k){o[k]=(p[k]===undefined?null:p[k])});return o}
 function roleId(){return S.role==='admin'?'admin':S.role==='gerant'?'gerant':'equipe'}
 function logAdd(act,name,detail){if(!fdb||S.mode!=='db'||!S.user)return;try{fdb.collection(LOGC).add({t:Date.now(),who:roleId(),act:act,name:name||'',detail:detail||''}).catch(function(){})}catch(e){}}
 function showV(v){if(v===null||v===undefined||v==='')return '—';if(typeof v==='number')return fmtF(v);return String(v)}
@@ -249,9 +250,34 @@ function logDiff(p,n){
   if(b.stock!==n.stock&&!n.skip&&!b.skip)logAdd('stock',n.name,showV(b.stock)+' → '+showV(n.stock)+' '+n.unit);
   if(b.skip!==n.skip)logAdd(n.skip?'passé':'compté',n.name,'');
   if(b.checked!==n.checked)logAdd(n.checked?'vérifié':'décoché',n.name,'');
-  var ch=[];['name','supplier','need','seuil','unit','orderUnit','factor','rayon'].forEach(function(k){if(b[k]!==n[k])ch.push(LABEL[k]+' : '+showV(b[k])+' → '+showV(n[k]))});
+  var ch=[];['name','supplier','need','seuil','price','unit','orderUnit','factor','rayon'].forEach(function(k){if(b[k]!==n[k])ch.push(LABEL[k]+' : '+showV(b[k])+' → '+showV(n[k]))});
   if(ch.length)logAdd('produit',b.name||n.name,ch.join(' ; '));
   base[p.id]=n;
+}
+function eur(n){return (Math.round(n*100)/100).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' €'}
+function lsGet(k,def){try{var r=JSON.parse(localStorage.getItem(k)||'null');return r==null?def:r}catch(e){return def}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+function setOpt(k,v){
+  S.opts[k]=!!v;
+  if(S.mode==='db'&&fdb)fdb.collection(META).doc('options').set({prices:!!S.opts.prices,losses:!!S.opts.losses}).catch(function(){S.banner='err';render()});
+  else lsSet(LS_O,S.opts);
+  if(!S.opts.losses&&S.pmode==='loss')S.pmode='circuit';
+  render();
+}
+function supTot(g){var t=0,any=false;g.lines.forEach(function(l){if(l.p.price!=null){t+=l.c.order*l.p.price;any=true}});return any?' · ≈ '+eur(t):''}
+function archSave(){
+  var gs=groups();if(!gs.length)return;
+  var pr=S.opts.prices,tot=0,any=false,n=0;
+  var sups=gs.map(function(g){return {sup:g.sup||'',lines:g.lines.map(function(l){n++;var pc=pr&&l.p.price!=null?l.p.price:null;if(pc!==null){tot+=l.c.order*pc;any=true}return {name:l.p.name,qty:l.c.order,unit:l.p.orderUnit,price:pc,ok:!!l.p.checked}})}});
+  var e={t:Date.now(),who:roleId(),sups:sups,total:any?Math.round(tot*100)/100:null,n:n};
+  if(S.mode==='db'&&fdb)fdb.collection(ARCH).add(e).catch(function(){});
+  else{S.arch.unshift(e);S.arch=S.arch.slice(0,50);lsSet(LS_A,S.arch)}
+}
+function lossSave(p,qty,reason){
+  var r={t:Date.now(),who:roleId(),name:p.name,qty:qty,unit:p.unit,reason:reason};
+  if(S.mode==='db'&&fdb)fdb.collection(LOSS).add(r).catch(function(){});
+  else{S.loss.unshift(r);S.loss=S.loss.slice(0,200);lsSet(LS_L,S.loss)}
+  logAdd('perte',p.name,fmtF(qty)+' '+p.unit+' · '+reason);
 }
 function calc(p){
   var same=nz(p.unit)===nz(p.orderUnit);
@@ -328,7 +354,7 @@ function stockFor(p){
   if(p.skip)return '<div class="sline"><span class="small muted">Pas compté</span><button class="btn ghost sm" data-action="unskip" data-id="'+p.id+'">Compter</button></div>';
   return '<div class="sline"><div class="stepper"><button data-action="stock-dec" data-id="'+p.id+'" aria-label="Moins">−</button>'+
     '<input type="text" inputmode="text" autocomplete="off" value="'+fmtF(p.stock)+'" data-action="stock-num" data-id="'+p.id+'" aria-label="Stock de '+esc(p.name)+'">'+
-    '<button data-action="stock-inc" data-id="'+p.id+'" aria-label="Plus">+</button></div><span class="small muted">'+esc(uname(p.unit,p.stock))+'</span><button class="btn ghost sm" data-action="skip" data-id="'+p.id+'">Passer</button></div>';
+    '<button data-action="stock-inc" data-id="'+p.id+'" aria-label="Plus">+</button></div><span class="small muted">'+esc(uname(p.unit,p.stock))+'</span><button class="btn ghost sm" data-action="skip" data-id="'+p.id+'">Passer</button>'+(S.opts.losses?'<button class="btn ghost sm" data-action="loss-open" data-id="'+p.id+'">Perte</button>':'')+'</div>';
 }
 function frigoRow(p,i){
   var c=calc(p),pill;
@@ -345,7 +371,7 @@ function viewFrigo(){
   if(!S.products.length)return emptyState();
   var list=vis(),miss=0;
   list.forEach(function(p){if(calc(p).order>0)miss++});
-  var h='<div class="summary"><span><b>'+list.length+'</b> produits dans le circuit</span><span><b>'+miss+'</b> à commander</span></div>';
+  var h=(S.lossFor?lossPanel():'')+'<div class="summary"><span><b>'+list.length+'</b> produits dans le circuit</span><span><b>'+miss+'</b> à commander</span></div>';
   h+='<p class="muted small" style="margin:0 0 12px">Tape le stock compté (1/2 ou 1/3 accepté). « Passer » ignore un produit pour cette commande. Le reste se règle dans Paramètres.</p>';
   h+='<div class="card"><div class="thead"><span></span><span>Produit</span><span>Besoin hebdo</span><span>Stock</span><span style="text-align:right">À commander</span></div><ul class="list">';
   list.forEach(function(p,i){h+=frigoRow(p,i)});
@@ -363,7 +389,7 @@ function groups(){
 }
 function viewCommande(){
   if(!S.products.length)return emptyState();
-  var gs=groups(),nl=0;
+  var gs=groups(),nl=0,sp=S.opts.prices&&canManage();
   gs.forEach(function(g){nl+=g.lines.length});
   var h='<div class="summary"><span><b>'+nl+'</b> '+(nl>1?'produits':'produit')+' à commander</span><span><b>'+gs.length+'</b> fournisseur'+(gs.length>1?'s':'')+'</span></div>';
   h+='<p class="muted small" style="margin:0 0 12px">Calculé à partir de l’inventaire, dans l’ordre des produits chez chaque fournisseur. À la réception, coche chaque ligne vérifiée : elle se raye.</p>';
@@ -375,11 +401,11 @@ function viewCommande(){
     g.lines.forEach(function(l){
       var p=l.p,c=l.c;
       if(isGFD(g.sup)&&p.rayon!==lastR){h+='<div class="rh">'+esc(p.rayon||'Autres')+'</div>';lastR=p.rayon}
-      h+='<div class="line'+(p.checked?' cut':'')+'"><input type="checkbox" class="box" data-action="chk" data-id="'+p.id+'"'+(p.checked?' checked':'')+' aria-label="Vérifié : '+esc(p.name)+'"><div class="nm"><b>'+esc(p.name)+'</b><span class="zone">manque '+esc(fmtF(c.missing)+' '+uname(p.unit,c.missing))+(c.conv?' · 1 '+esc(p.unit)+' = '+fmt(p.factor)+' '+esc(p.orderUnit):'')+'</span></div>'+
+      h+='<div class="line'+(p.checked?' cut':'')+'"><input type="checkbox" class="box" data-action="chk" data-id="'+p.id+'"'+(p.checked?' checked':'')+' aria-label="Vérifié : '+esc(p.name)+'"><div class="nm"><b>'+esc(p.name)+'</b><span class="zone">manque '+esc(fmtF(c.missing)+' '+uname(p.unit,c.missing))+(c.conv?' · 1 '+esc(p.unit)+' = '+fmt(p.factor)+' '+esc(p.orderUnit):'')+(sp&&p.price!=null?' · '+esc(eur(c.order*p.price)):'')+'</span></div>'+
         '<span class="un oq">'+esc(qty(c.order,p.orderUnit))+'</span></div>';
     });
     var nc=g.lines.filter(function(l){return l.p.checked}).length;
-    h+='<div class="sup-f"><span class="tot">'+nc+' / '+g.lines.length+' vérifié'+(nc>1?'s':'')+'</span><span class="bar" style="margin:0"><button class="btn sm" data-action="dl" data-sup="'+gi+'">Bon de commande PDF</button><button class="btn ghost sm" data-action="copy" data-sup="'+gi+'">Copier</button></span></div></section>';
+    h+='<div class="sup-f"><span class="tot">'+nc+' / '+g.lines.length+' vérifié'+(nc>1?'s':'')+(sp?esc(supTot(g)):'')+'</span><span class="bar" style="margin:0"><button class="btn sm" data-action="dl" data-sup="'+gi+'">Bon de commande PDF</button><button class="btn ghost sm" data-action="copy" data-sup="'+gi+'">Copier</button></span></div></section>';
   });
   var tl=0,tc=0;gs.forEach(function(g){g.lines.forEach(function(l){tl++;if(l.p.checked)tc++})});
   var allDone=tl>0&&tc===tl;
@@ -429,6 +455,43 @@ function addTyped(){
 }
 function fld(label,p,action,val,extra){
   return '<div'+(extra&&extra.full?' class="full"':'')+'><label>'+label+'<input'+(extra&&extra.list?' list="'+extra.list+'"':'')+(extra&&extra.num?' inputmode="decimal" autocomplete="off"':'')+(extra&&extra.ph?' placeholder="'+esc(extra.ph)+'"':'')+' value="'+esc(val)+'" data-action="'+action+'" data-id="'+p.id+'"></label></div>';
+}
+function optPanel(){
+  var cb=function(a,on,t,d){return '<label style="display:flex;gap:10px;align-items:flex-start;margin:0 0 10px;text-transform:none;letter-spacing:0;font-size:.95rem;color:var(--ink)"><input type="checkbox" data-action="'+a+'"'+(on?' checked':'')+' style="margin-top:3px;width:18px;height:18px"><span><b>'+t+'</b><br><span class="muted small">'+d+'</span></span></label>'};
+  return '<div class="panel"><b>Options</b><div style="margin-top:10px">'+
+    cb('opt-prices',S.opts.prices,'Prix et budget','Un prix par produit (dans la fiche produit). La commande affiche le total de chaque fournisseur. Visible par le gérant et l’admin.')+
+    cb('opt-losses',S.opts.losses,'Pertes et casse','Un bouton « Perte » dans l’inventaire (jeté, périmé, cassé…). Le stock baisse et la perte est enregistrée.')+
+    '</div></div>';
+}
+function dstr(t){return new Date(t||0).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
+function viewArchive(){
+  var h='<p class="muted small" style="margin:0 0 12px">Chaque commande est archivée quand on appuie sur « Recommencer » (50 dernières).</p>';
+  if(!S.arch.length)return h+'<div class="card empty"><p>Aucune commande archivée pour l’instant.</p></div>';
+  var cnt={};
+  S.arch.forEach(function(e){(e.sups||[]).forEach(function(g){(g.lines||[]).forEach(function(l){var c=cnt[l.name]||(cnt[l.name]={n:0,q:0,u:l.unit});c.n++;c.q+=l.qty||0})})});
+  var top=Object.keys(cnt).sort(function(a,b){return cnt[b].n-cnt[a].n||cnt[b].q-cnt[a].q}).slice(0,8);
+  h+='<div class="panel"><b>Les plus souvent commandés</b><ul style="margin:8px 0 0;padding-left:18px">'+top.map(function(k){return '<li>'+esc(k)+' <span class="muted">· '+cnt[k].n+' fois sur '+S.arch.length+' · '+esc(fmtF(cnt[k].q)+' '+uname(cnt[k].u,cnt[k].q))+' au total</span></li>'}).join('')+'</ul></div>';
+  S.arch.forEach(function(e){
+    h+='<details class="panel"><summary style="cursor:pointer"><b>'+esc(dstr(e.t))+'</b> · '+plural(e.n||0,'produit')+(e.total!=null?' · '+esc(eur(e.total)):'')+'</summary>';
+    (e.sups||[]).forEach(function(g){
+      h+='<h3 style="margin:12px 0 4px">'+esc(g.sup||'Sans fournisseur')+'</h3><ul style="margin:0;padding-left:18px">'+(g.lines||[]).map(function(l){return '<li'+(l.ok?'':' class="muted"')+'>'+esc(l.name)+' · '+esc(qty(l.qty,l.unit))+(l.price!=null?' · '+esc(eur(l.qty*l.price)):'')+(l.ok?'':' (non vérifié)')+'</li>'}).join('')+'</ul>';
+    });
+    h+='</details>';
+  });
+  return h;
+}
+function viewLoss(){
+  var h='<p class="muted small" style="margin:0 0 12px">Pertes enregistrées depuis le bouton « Perte » de l’inventaire (200 dernières).</p>';
+  if(!S.loss.length)return h+'<div class="card empty"><p>Aucune perte enregistrée.</p></div>';
+  var tot={};S.loss.forEach(function(e){var c=tot[e.name]||(tot[e.name]={q:0,u:e.unit});c.q+=e.qty||0});
+  h+='<div class="panel"><b>Total par produit</b><ul style="margin:8px 0 0;padding-left:18px">'+Object.keys(tot).sort(function(a,b){return tot[b].q-tot[a].q}).map(function(k){return '<li>'+esc(k)+' <span class="muted">· '+esc(fmtF(tot[k].q)+' '+uname(tot[k].u,tot[k].q))+'</span></li>'}).join('')+'</ul></div>';
+  h+='<div class="card"><ul class="list">'+S.loss.map(function(e){return '<li class="row" style="display:block"><div class="small muted">'+esc(dstr(e.t))+' · '+esc(WHO[e.who]||e.who||'')+'</div><div><b>'+esc(e.name)+'</b> '+esc(fmtF(e.qty)+' '+uname(e.unit,e.qty))+' <span class="muted">· '+esc(e.reason||'')+'</span></div></li>'}).join('')+'</ul></div>';
+  return h;
+}
+function lossPanel(){
+  var p=get(S.lossFor);if(!p)return '';
+  return '<div class="panel"><b>Perte : '+esc(p.name)+'</b><div class="bar" style="margin:10px 0 0;flex-wrap:wrap"><input id="lq" inputmode="text" autocomplete="off" placeholder="Quantité (1/2 ok)" style="'+PWSTYLE+';max-width:160px"><select id="lr" style="'+PWSTYLE+';max-width:140px"><option>Jeté</option><option>Périmé</option><option>Cassé</option><option>Offert</option><option>Autre</option></select></div>'+
+    '<div class="bar" style="margin:10px 0 0"><button class="btn sm" data-action="loss-save">Enregistrer</button><button class="btn ghost sm" data-action="loss-cancel">Annuler</button></div></div>';
 }
 function viewJournal(){
   var h='<p class="muted small" style="margin:0 0 12px">Journal des modifications (300 dernières). Visible uniquement par l’admin.</p>';
@@ -509,8 +572,10 @@ function viewGate(){
 }
 function viewProduits(){
   var lk=(S.mode==='db'?'<div class="bar"><button class="btn ghost sm" data-action="lock">Verrouiller</button><span class="muted small">Revenir à l’accès équipe</span></div>':'');
-  var tg=lk+(S.mode==='db'?pwPanel():'')+'<div class="bar"><button class="chip" aria-pressed="'+(S.pmode==='circuit')+'" data-action="pmode" data-m="circuit">Produits et circuit</button><button class="chip" aria-pressed="'+(S.pmode==='four')+'" data-action="pmode" data-m="four">Ordre chez le fournisseur</button>'+(S.role==='admin'?'<button class="chip" aria-pressed="'+(S.pmode==='journal')+'" data-action="pmode" data-m="journal">Journal</button>':'')+'</div>';
+  var tg=lk+(S.mode==='db'?pwPanel():'')+optPanel()+'<div class="bar"><button class="chip" aria-pressed="'+(S.pmode==='circuit')+'" data-action="pmode" data-m="circuit">Produits et circuit</button><button class="chip" aria-pressed="'+(S.pmode==='four')+'" data-action="pmode" data-m="four">Ordre chez le fournisseur</button><button class="chip" aria-pressed="'+(S.pmode==='archive')+'" data-action="pmode" data-m="archive">Historique</button>'+(S.opts.losses?'<button class="chip" aria-pressed="'+(S.pmode==='loss')+'" data-action="pmode" data-m="loss">Pertes</button>':'')+(S.role==='admin'?'<button class="chip" aria-pressed="'+(S.pmode==='journal')+'" data-action="pmode" data-m="journal">Journal</button>':'')+'</div>';
   if(S.pmode==='journal'&&S.role==='admin')return tg+viewJournal();
+  if(S.pmode==='archive')return tg+viewArchive();
+  if(S.pmode==='loss'&&S.opts.losses)return tg+viewLoss();
   if(S.pmode==='four')return tg+viewFour();
   var list=vis(),h=tg+'<p class="muted small" style="margin:0 0 12px">Espace du gérant : produits, ordre du circuit, fournisseurs, besoins hebdo, seuils et unités. Seuil : on commande seulement si le stock est à ce niveau ou en dessous (vide = dès qu’il manque). Le rayon s’affiche pour les produits GFD.</p>'+addForm();
   h+='<div class="panel"><b>Coller une liste</b><p class="muted small" style="margin:4px 0 8px">Un produit par ligne : nom ; fournisseur ; besoin hebdo. Seul le nom est obligatoire.</p><textarea class="cp" id="bulk" placeholder="Coca-Cola 33 cl ; Mon fournisseur ; 24"></textarea><button class="btn sm" data-action="bulk-add">Ajouter ces lignes</button></div>';
@@ -526,6 +591,7 @@ function viewProduits(){
       (isGFD(p.supplier)?'<div><label>Rayon GFD<select data-action="f-rayon" data-id="'+p.id+'"><option value="">Autres</option>'+RAYONS.map(function(r){return '<option'+(p.rayon===r?' selected':'')+'>'+esc(r)+'</option>'}).join('')+'</select></label></div>':'')+
       fld('Besoin hebdo',p,'f-need',fmtF(p.need),{num:1})+
       fld('Seuil de commande',p,'f-seuil',p.seuil==null?'':fmtF(p.seuil),{num:1,ph:'vide = dès qu’il manque'})+
+      (S.opts.prices?fld('Prix (€ par '+esc(p.orderUnit)+')',p,'f-price',p.price==null?'':String(p.price).replace('.',','),{num:1,ph:'optionnel'}):'')+
       fld('Compté en',p,'f-unit',p.unit,{list:'units',ph:'unité, barquette…'})+
       fld('Commandé en',p,'f-ounit',p.orderUnit,{list:'units',ph:'unité, kg…'})+
       (nz(p.unit)!==nz(p.orderUnit)?'<div class="full conv"><span>1 '+esc(p.unit)+' =</span><input inputmode="decimal" autocomplete="off" value="'+fmt(p.factor)+'" data-action="f-factor" data-id="'+p.id+'" aria-label="Conversion"><span>'+esc(p.orderUnit)+'</span></div>':'')+
@@ -666,9 +732,14 @@ function startSub(){
   stopSub();S.loaded=false;dbCol=fdb.collection(COLLECTION);
   loadT=setTimeout(function(){if(!S.loaded){S.loaded=true;S.banner='slow';render()}},10000);
   unsub=dbCol.onSnapshot(onSnap,function(){S.loaded=true;S.banner='slow';render()});
+  fdb.collection(META).doc('options').get().then(function(d){if(d.exists){var o=d.data()||{};S.opts={prices:!!o.prices,losses:!!o.losses};render()}},function(){});
+  if(S.role==='gerant'||S.role==='admin'){
+    archUnsub=fdb.collection(ARCH).orderBy('t','desc').limit(50).onSnapshot(function(sn){S.arch=sn.docs.map(function(d){return d.data()});if(editing())S.pendingRender=true;else render()},function(){});
+    lossUnsub=fdb.collection(LOSS).orderBy('t','desc').limit(200).onSnapshot(function(sn){S.loss=sn.docs.map(function(d){return d.data()});if(editing())S.pendingRender=true;else render()},function(){});
+  }
   if(S.role==='admin')logUnsub=fdb.collection(LOGC).orderBy('t','desc').limit(300).onSnapshot(function(sn){S.log=sn.docs.map(function(d){return d.data()});if(editing())S.pendingRender=true;else render()},function(){});
 }
-function stopSub(){if(unsub){unsub();unsub=null}if(logUnsub){logUnsub();logUnsub=null}S.log=[];clearTimeout(loadT);dbCol=null}
+function stopSub(){if(unsub){unsub();unsub=null}if(logUnsub){logUnsub();logUnsub=null}if(archUnsub){archUnsub();archUnsub=null}if(lossUnsub){lossUnsub();lossUnsub=null}S.log=[];S.arch=[];S.loss=[];clearTimeout(loadT);dbCol=null}
 function secAuth(){var a;try{a=firebase.app('sec')}catch(e){a=firebase.initializeApp(FIREBASE_CONFIG,'sec')}return a.auth()}
 function pwErr(e,fallback){var c=e&&e.code||'';
   if(c==='auth/weak-password')return '6 caractères minimum.';
@@ -724,6 +795,11 @@ function click(a,el){
   switch(a){
     case 'tab':S.tab=el.dataset.tab;S.confirm=null;S.copy=null;render();break;
     case 'stock-dec':mutate(id,function(p){p.stock=Math.max(0,Math.ceil(p.stock)-1)});break;
+    case 'loss-open':S.lossFor=id;render();var lq=$('#lq');if(lq){lq.scrollIntoView({block:'center'});lq.focus()}break;
+    case 'loss-cancel':S.lossFor=null;render();break;
+    case 'loss-save':{var lp=get(S.lossFor);if(!lp)break;var lqv=num(($('#lq')||{}).value),lrv=($('#lr')||{}).value||'Autre';
+      if(!lqv){flash('Entre une quantité.');break}
+      S.lossFor=null;lossSave(lp,lqv,lrv);mutate(lp.id,function(q){q.stock=Math.max(0,Math.round((q.stock-lqv)*1000)/1000)});flash('Perte enregistrée');break}
     case 'skip':mutate(id,function(p){p.skip=true;p.stock=0;p.checked=false});break;
     case 'unskip':mutate(id,function(p){p.skip=false});break;
     case 'stock-inc':mutate(id,function(p){p.stock=Math.floor(p.stock)+1});break;
@@ -749,7 +825,7 @@ function click(a,el){
     case 'lock':doLock();break;
     case 'logout':setTeamPw('');S.tab='frigo';if(auth)auth.signOut();break;
     case 'restart':S.confirm='restart';render();break;
-    case 'restart-yes':S.confirm=null;logAdd('recommencer','Nouvelle commande','');S.products.forEach(function(p){if(p.checked||p.stock!==0||p.skip){quiet[p.id]=1;p.checked=false;p.skip=false;p.stock=0;queueWrite(p)}});render();flash('Nouvelle commande prête : recompte le stock');break;
+    case 'restart-yes':S.confirm=null;archSave();logAdd('recommencer','Nouvelle commande','');S.products.forEach(function(p){if(p.checked||p.stock!==0||p.skip){quiet[p.id]=1;p.checked=false;p.skip=false;p.stock=0;queueWrite(p)}});render();flash('Nouvelle commande prête : recompte le stock');break;
     case 'unchk':S.products.forEach(function(p){if(p.checked){p.checked=false;queueWrite(p)}});render();break;
     case 'pmode':S.pmode=el.dataset.m;render();break;
     case 'sup-up':supMove(id,-1);break;
@@ -780,9 +856,12 @@ function change(a,el){
     case 'stock-num':mutate(id,function(p){p.stock=num(el.value)});break;
     case 'f-name':mutate(id,function(p){p.name=el.value.trim()||'Produit'});break;
     case 'f-sup':mutate(id,function(p){p.supplier=el.value.trim()});break;
+    case 'f-price':mutate(id,function(p){var v=numF(el.value);p.price=isFinite(v)?Math.round(v*100)/100:null});break;
     case 'f-seuil':mutate(id,function(p){var v=numF(el.value);p.seuil=isFinite(v)?Math.round(v*1000)/1000:null});break;
     case 'f-need':mutate(id,function(p){p.need=num(el.value)});break;
     case 'chk':mutate(id,function(p){p.checked=el.checked});break;
+    case 'opt-prices':setOpt('prices',el.checked);break;
+    case 'opt-losses':setOpt('losses',el.checked);break;
     case 'sup-goto':supMove(id,+el.value-1,true);break;
     case 'f-rayon':mutate(id,function(p){p.rayon=el.value});break;
     case 'f-unit':mutate(id,function(p){var u=el.value.trim()||'unité';if(p.orderUnit===p.unit)p.orderUnit=u;p.unit=u;if(nz(p.unit)===nz(p.orderUnit))p.factor=1});break;
@@ -822,6 +901,7 @@ function withTimeout(p,ms){return Promise.race([p,new Promise(function(r){setTim
 function startLocal(){
   S.mode='local';
   try{var raw=JSON.parse(localStorage.getItem(LS)||'[]');S.products=(Array.isArray(raw)?raw:[]).map(function(d){return norm(d.id||uid(),d)})}catch(e){S.products=[]}
+  S.arch=lsGet(LS_A,[]);S.loss=lsGet(LS_L,[]);var lo=lsGet(LS_O,null);if(lo)S.opts={prices:!!lo.prices,losses:!!lo.losses};
   S.loaded=true;render();
 }
 function boot(){
