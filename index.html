@@ -271,7 +271,7 @@ function setOpt(k,v){
   if(!S.opts.losses&&S.pmode==='loss')S.pmode='circuit';
   render();
 }
-function supTot(g){var t=0,any=false;g.lines.forEach(function(l){if(l.p.price!=null){t+=l.c.order*l.p.price;any=true}});return any?' · ≈ '+eur(t):''}
+function supTot(g){var t=0;g.lines.forEach(function(l){if(l.p.price!=null)t+=l.c.order*l.p.price});return ' · ≈ '+eur(t)}
 function archSave(){
   var gs=groups();if(!gs.length)return;
   var pr=S.opts.prices,tot=0,any=false,n=0;
@@ -642,7 +642,7 @@ async function makePdf(g){
   var F=await doc.embedFont(L.StandardFonts.Helvetica),FB=await doc.embedFont(L.StandardFonts.HelveticaBold);
   var form=doc.getForm();
   var W=595.28,H=841.89,M=42.5,RH=25.5,gfd=isGFD(g.sup),page,y=M,k=0,pages=[];
-  var wp=S.opts.prices&&canManage()&&g.lines.some(function(l){return l.p.price!=null});
+  var wp=S.opts.prices&&canManage(),anyP=g.lines.some(function(l){return l.p.price!=null});
   var xQ=wp?W-M-186:W-M-96,xU=wp?W-M-176:W-M-85,xP=W-M-84,xT=W-M-6,rgb=L.rgb,BLACK=rgb(0,0,0),GREY=rgb(.35,.35,.35);
   function T(t){return pf(t).replace(/[^\x20-\x7E -ÿŒœ‘’“”–—…€]/g,'')}
   function put(t,x,top,size,font,color,right){t=T(t);if(right)x-=font.widthOfTextAtSize(t,size);page.drawText(t,{x:x,y:H-top,size:size,font:font,color:color||BLACK})}
@@ -675,10 +675,10 @@ async function makePdf(g){
     var nm=T(l.p.name),mw=xQ-(M+34)-24;while(nm.length>1&&FB.widthOfTextAtSize(nm,11)>mw)nm=nm.slice(0,-1);
     put(nm,M+34,y+17,11,FB);
     put(fmt(l.c.order),xQ,y+17,11,F,null,true);put(uname(l.p.orderUnit,l.c.order),xU,y+17,11,F);
-    if(wp){if(l.p.price!=null){var lt=l.c.order*l.p.price;gtot+=lt;put(eur(l.p.price),xP,y+17,11,F,null,true);put(eur(lt),xT,y+17,11,F,null,true)}else{nop++;put('—',xP,y+17,11,F,GREY,true);put('—',xT,y+17,11,F,GREY,true)}}
+    if(wp){if(l.p.price!=null){var lt=l.c.order*l.p.price;gtot+=lt;put(eur(l.p.price),xP,y+17,11,F,null,true);put(eur(lt),xT,y+17,11,F,null,true)}else nop++}
     y+=RH;
   });
-  if(wp){room(RH+20);put('TOTAL',xP,y+20,12,FB,null,true);put(eur(gtot),xT,y+20,12,FB,null,true);y+=RH;if(nop)put('Total hors produits sans prix ('+nop+').',xT,y+12,8,F,GREY,true)}
+  if(wp){room(RH+20);put('TOTAL',xP,y+20,12,FB,null,true);put(eur(gtot),xT,y+20,12,FB,null,true);y+=RH;if(nop&&anyP)put('Total hors produits sans prix ('+nop+').',xT,y+12,8,F,GREY,true)}
   room(100);y+=44;
   hline(y,M,M+212,.8,BLACK);hline(y,W-M-212,W-M,.8,BLACK);
   put('Validé par le gérant',M,y+14,9,F,GREY);put('Reçu le / signature',W-M-212,y+14,9,F,GREY);
