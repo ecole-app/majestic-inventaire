@@ -184,11 +184,11 @@ textarea.cp{width:100%;min-height:110px;font:500 .85rem var(--f-mono);background
 'use strict';
 /* ====== CONFIG FIREBASE : à remplir (voir LISEZMOI.md) ====== */
 var FIREBASE_CONFIG={apiKey:'AIzaSyAEkP5MQGOGx-kzBPyXhoqEmdbOwTjBOy8',authDomain:'majestic-commande.firebaseapp.com',projectId:'majestic-commande',appId:'1:793270443068:web:20bfb46999cea678263739'};
-var COLLECTION='commande_majestic',META='commande_meta';
-var EMAIL_TEAM='equipe@commande-majestic.app',EMAIL_MGR='gerant@commande-majestic.app';
+var COLLECTION='commande_majestic',META='commande_meta',LOGC='commande_log';
+var EMAIL_TEAM='equipe@commande-majestic.app',EMAIL_MGR='gerant@commande-majestic.app',EMAIL_ADM='admin@commande-majestic.app';
 /* ============================================================ */
 var LS='commande-buvette-v1';
-var S={pmode:'circuit',products:[],tab:'frigo',loaded:false,mode:'local',banner:'',confirm:null,copy:null,user:null,role:'',authErr:'',gateErr:'',authReady:false,setup:'ok',setupErr:'',setupBusy:false,pwOpen:false,pwMsg:null,pendingRender:false};
+var S={pmode:'circuit',products:[],tab:'frigo',loaded:false,mode:'local',banner:'',confirm:null,copy:null,user:null,role:'',authErr:'',gateErr:'',authReady:false,setup:'ok',setupErr:'',setupBusy:false,adminExists:true,admErr:'',admBusy:false,log:[],pwOpen:false,pwMsg:null,pendingRender:false};
 var dbCol=null,auth=null,fdb=null,unsub=null,loadT=null,toastT=null;
 var timers={},writing={},dirty={},gone={};
 var CATALOG=[
@@ -235,6 +235,24 @@ function norm(id,d){
 }
 function clean(p){var o={};for(var k in p)if(k!=='id'&&k!=='skip')o[k]=p[k];if(p.skip)o.stock='skip';return o}
 function isMeas(u){return /^(kg|g|l|cl|ml)$/i.test(nz(u))}
+var base={},quiet={},logUnsub=null;
+var WHO={gerant:'gérant',equipe:'équipe',admin:'admin'};
+var LABEL={name:'nom',supplier:'fournisseur',need:'besoin',seuil:'seuil',unit:'compté en',orderUnit:'commandé en',factor:'conversion',rayon:'rayon'};
+function snapOf(p){var o={};['name','supplier','need','seuil','unit','orderUnit','factor','rayon','stock','skip','checked'].forEach(function(k){o[k]=p[k]});return o}
+function roleId(){return S.role==='admin'?'admin':S.role==='gerant'?'gerant':'equipe'}
+function logAdd(act,name,detail){if(!fdb||S.mode!=='db'||!S.user)return;try{fdb.collection(LOGC).add({t:Date.now(),who:roleId(),act:act,name:name||'',detail:detail||''}).catch(function(){})}catch(e){}}
+function showV(v){if(v===null||v===undefined||v==='')return '—';if(typeof v==='number')return fmtF(v);return String(v)}
+function logDiff(p,n){
+  var b=base[p.id];
+  if(quiet[p.id]){delete quiet[p.id];base[p.id]=n;return}
+  if(!b){logAdd('ajout',n.name,'');base[p.id]=n;return}
+  if(b.stock!==n.stock&&!n.skip&&!b.skip)logAdd('stock',n.name,showV(b.stock)+' → '+showV(n.stock)+' '+n.unit);
+  if(b.skip!==n.skip)logAdd(n.skip?'passé':'compté',n.name,'');
+  if(b.checked!==n.checked)logAdd(n.checked?'vérifié':'décoché',n.name,'');
+  var ch=[];['name','supplier','need','seuil','unit','orderUnit','factor','rayon'].forEach(function(k){if(b[k]!==n[k])ch.push(LABEL[k]+' : '+showV(b[k])+' → '+showV(n[k]))});
+  if(ch.length)logAdd('produit',b.name||n.name,ch.join(' ; '));
+  base[p.id]=n;
+}
 function calc(p){
   var same=nz(p.unit)===nz(p.orderUnit);
   if(p.skip)return {missing:0,order:0,conv:!same,skip:true};
@@ -256,14 +274,16 @@ function flush(id){
   if(writing[id]){dirty[id]=true;return}
   var p=get(id);if(!p)return;
   writing[id]=true;
+  var nowSnap=snapOf(p);
   var op=S.role==='equipe'?dbCol.doc(id).update({stock:p.skip?'skip':p.stock,checked:!!p.checked}):dbCol.doc(id).set(clean(p));
-  op.then(function(){if(S.banner==='err'){S.banner='';render()}},function(){S.banner='err';render()}).then(function(){
+  op.then(function(){logDiff(p,nowSnap);if(S.banner==='err'){S.banner='';render()}},function(){S.banner='err';render()}).then(function(){
     writing[id]=false;
     if(dirty[id]){dirty[id]=false;flush(id)}
   });
 }
 function save(p){queueWrite(p);render()}
 function remove(id){
+  var rp=get(id);if(dbCol&&rp)logAdd('suppression',rp.name,'');delete base[id];
   S.products=S.products.filter(function(p){return p.id!==id});
   if(dbCol){gone[id]=true;clearTimeout(timers[id]);delete timers[id];
     dbCol.doc(id).delete().then(function(){delete gone[id]},function(){delete gone[id];S.banner='err';render()});
@@ -279,7 +299,7 @@ function onSnap(snap){
     if(gone[d.id])return;
     seen[d.id]=1;
     var loc=get(d.id);
-    if(loc&&(timers[d.id]||writing[d.id]))next.push(loc);else next.push(norm(d.id,d.data()||{}));
+    if(loc&&(timers[d.id]||writing[d.id]))next.push(loc);else{var np=norm(d.id,d.data()||{});base[d.id]=snapOf(np);next.push(np)}
   });
   S.products.forEach(function(p){if(!seen[p.id]&&(timers[p.id]||writing[p.id]))next.push(p)});
   S.products=next;
@@ -294,7 +314,7 @@ function head(){
   var h='<div class="tabs" role="tablist">';
   t.forEach(function(x){h+='<button role="tab" aria-selected="'+(S.tab===x[0])+'" data-action="tab" data-tab="'+x[0]+'">'+x[1]+'</button>'});
   h+='</div>';
-  if(S.mode==='db'&&S.user)h+='<div class="small muted" style="margin:-4px 0 12px">Accès : '+(S.role==='gerant'?'gérant':'équipe')+' · <button class="mini" data-action="logout">Se déconnecter</button></div>';
+  if(S.mode==='db'&&S.user)h+='<div class="small muted" style="margin:-4px 0 12px">Accès : '+(S.role==='admin'?'admin':S.role==='gerant'?'gérant':'équipe')+' · <button class="mini" data-action="logout">Se déconnecter</button></div>';
   if(S.mode==='local'&&S.loaded)h+='<div class="banner">Mode local : les données restent sur cet appareil. Ouvre la page connecté pour les partager.</div>';
   if(S.banner==='err')h+='<div class="banner">Enregistrement impossible pour le moment. Les changements seront renvoyés au prochain geste.</div>';
   if(S.banner==='slow')h+='<div class="banner">Données pas encore joignables. Ce que tu vois peut être en retard.</div>';
@@ -410,6 +430,14 @@ function addTyped(){
 function fld(label,p,action,val,extra){
   return '<div'+(extra&&extra.full?' class="full"':'')+'><label>'+label+'<input'+(extra&&extra.list?' list="'+extra.list+'"':'')+(extra&&extra.num?' inputmode="decimal" autocomplete="off"':'')+(extra&&extra.ph?' placeholder="'+esc(extra.ph)+'"':'')+' value="'+esc(val)+'" data-action="'+action+'" data-id="'+p.id+'"></label></div>';
 }
+function viewJournal(){
+  var h='<p class="muted small" style="margin:0 0 12px">Journal des modifications (300 dernières). Visible uniquement par l’admin.</p>';
+  if(!S.log.length)return h+'<div class="card empty"><p>Aucune modification enregistrée pour l’instant.</p></div>';
+  h+='<div class="card"><ul class="list">';
+  S.log.forEach(function(e){var d=new Date(e.t||0);
+    h+='<li class="row" style="display:block"><div class="small muted">'+esc(d.toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}))+' · '+esc(WHO[e.who]||e.who||'?')+'</div><div><b>'+esc(e.act||'')+'</b> '+esc(e.name||'')+(e.detail?' <span class="muted">'+esc(e.detail)+'</span>':'')+'</div></li>'});
+  return h+'</ul></div>';
+}
 function viewFour(){
   if(!S.products.length)return '<div class="card empty"><p>Ajoute d’abord des produits dans « Produits et circuit ».</p></div>';
   var h='<p class="muted small" style="margin:0 0 12px">Range les produits de chaque fournisseur dans l’ordre exact de son site ou de son ticket. La commande et le bon suivront cet ordre.</p>';
@@ -439,14 +467,36 @@ function pwPanel(){
   var h='<div class="panel"><div class="bar" style="margin:0;justify-content:space-between"><b>Mots de passe</b><button class="btn ghost sm" data-action="pw-toggle">'+(S.pwOpen?'Fermer':'Modifier')+'</button></div>';
   if(S.pwMsg)h+='<div class="banner" style="margin:10px 0 0;'+(S.pwMsg.ok?'background:var(--ok-bg);color:var(--ok)':'')+'">'+esc(S.pwMsg.text)+'</div>';
   if(S.pwOpen){
-    h+='<h3 style="margin:14px 0 8px">Mot de passe gérant</h3>'+inp('pc','Mot de passe actuel','password')+inp('pn1','Nouveau mot de passe','password')+inp('pn2','Confirmer le nouveau','password')+'<button class="btn sm" data-action="chg-mgr">Changer mon mot de passe</button>'+
+    h+='<h3 style="margin:14px 0 8px">'+(S.role==='admin'?'Mot de passe admin':'Mot de passe gérant')+'</h3>'+inp('pc','Mot de passe actuel','password')+inp('pn1','Nouveau mot de passe','password')+inp('pn2','Confirmer le nouveau','password')+'<button class="btn sm" data-action="chg-mgr">Changer mon mot de passe</button>'+
       '<h3 style="margin:18px 0 8px">Code équipe</h3>'+inp('tc0','Code équipe actuel','text')+inp('tc1','Nouveau code équipe','text')+'<button class="btn sm" data-action="chg-team">Changer le code équipe</button>'+
       '<p class="muted small" style="margin:12px 0 0">Après un changement de code équipe, le personnel devra se reconnecter avec le nouveau code.</p>';
   }
   return h+'</div>';
 }
-function canManage(){return S.mode!=='db'||S.role==='gerant'}
+function canManage(){return S.mode!=='db'||S.role==='gerant'||S.role==='admin'}
 var PWSTYLE='flex:1;min-width:0;padding:10px 12px;border:1.5px solid var(--line-strong);border-radius:8px;background:var(--bg);color:var(--ink);font:500 1rem var(--f-body)';
+function adminSetupVisible(){return location.hash==='#admin'&&S.adminExists===false&&S.setup!=='needed'}
+function viewAdminSetup(){
+  var f=function(id,label){return '<label style="display:block;margin:0 0 10px;font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)">'+label+'<input id="'+id+'" type="password" autocomplete="new-password" style="display:block;width:100%;margin-top:3px;'+PWSTYLE.replace('flex:1;min-width:0;','')+'"></label>'};
+  return '<div class="card" style="padding:20px 16px;margin-top:8px"><h2>Accès admin</h2><p class="muted small" style="margin:6px 0 14px">Crée le mot de passe admin. Il donne tous les droits et l’accès au journal des modifications. Fais-le maintenant : le premier qui valide devient l’admin.</p>'+
+    f('am1','Mot de passe admin')+f('am2','Confirmer le mot de passe')+
+    '<button class="btn" data-action="adm-setup"'+(S.admBusy?' disabled':'')+'>'+(S.admBusy?'Création…':'Créer l’accès admin')+'</button>'+
+    (S.admErr?'<div class="banner" style="margin:12px 0 0">'+esc(S.admErr)+'</div>':'')+'</div>';
+}
+function doAdminSetup(){
+  var m1=($('#am1')||{}).value||'',m2=($('#am2')||{}).value||'',err='';
+  if(m1.length<6)err='6 caractères minimum.';else if(m1!==m2)err='Les deux mots de passe ne correspondent pas.';
+  if(err){S.admErr=err;render();return}
+  S.admErr='';S.admBusy=true;render();
+  auth.createUserWithEmailAndPassword(EMAIL_ADM,m1).then(function(){return fdb.collection(META).doc('admin').set({done:true,at:Date.now()})}).then(function(){
+    S.adminExists=true;S.admBusy=false;try{location.hash=''}catch(e){}render();flash('Accès admin créé.');
+  }).catch(function(e){
+    S.admBusy=false;
+    if(e&&e.code==='auth/email-already-in-use'){S.adminExists=true;S.admErr='';S.authErr='L’accès admin existe déjà. Entre ton mot de passe.'}
+    else S.admErr=pwErr(e,'Création impossible. Réessaie.');
+    render();
+  });
+}
 function viewLogin(){
   return '<div class="card" style="padding:20px 16px;margin-top:8px"><h2>Accès</h2><p class="muted small" style="margin:6px 0 12px">Entre le code d’accès de l’équipe, ou le mot de passe du gérant.</p>'+
     '<div class="bar" style="margin:0;flex-wrap:nowrap"><input id="pw" type="password" autocomplete="current-password" placeholder="Code d’accès" style="'+PWSTYLE+'"><button class="btn" data-action="login">Entrer</button></div>'+
@@ -459,7 +509,8 @@ function viewGate(){
 }
 function viewProduits(){
   var lk=(S.mode==='db'?'<div class="bar"><button class="btn ghost sm" data-action="lock">Verrouiller</button><span class="muted small">Revenir à l’accès équipe</span></div>':'');
-  var tg=lk+(S.mode==='db'?pwPanel():'')+'<div class="bar"><button class="chip" aria-pressed="'+(S.pmode==='circuit')+'" data-action="pmode" data-m="circuit">Produits et circuit</button><button class="chip" aria-pressed="'+(S.pmode==='four')+'" data-action="pmode" data-m="four">Ordre chez le fournisseur</button></div>';
+  var tg=lk+(S.mode==='db'?pwPanel():'')+'<div class="bar"><button class="chip" aria-pressed="'+(S.pmode==='circuit')+'" data-action="pmode" data-m="circuit">Produits et circuit</button><button class="chip" aria-pressed="'+(S.pmode==='four')+'" data-action="pmode" data-m="four">Ordre chez le fournisseur</button>'+(S.role==='admin'?'<button class="chip" aria-pressed="'+(S.pmode==='journal')+'" data-action="pmode" data-m="journal">Journal</button>':'')+'</div>';
+  if(S.pmode==='journal'&&S.role==='admin')return tg+viewJournal();
   if(S.pmode==='four')return tg+viewFour();
   var list=vis(),h=tg+'<p class="muted small" style="margin:0 0 12px">Espace du gérant : produits, ordre du circuit, fournisseurs, besoins hebdo, seuils et unités. Seuil : on commande seulement si le stock est à ce niveau ou en dessous (vide = dès qu’il manque). Le rayon s’affiche pour les produits GFD.</p>'+addForm();
   h+='<div class="panel"><b>Coller une liste</b><p class="muted small" style="margin:4px 0 8px">Un produit par ligne : nom ; fournisseur ; besoin hebdo. Seul le nom est obligatoire.</p><textarea class="cp" id="bulk" placeholder="Coca-Cola 33 cl ; Mon fournisseur ; 24"></textarea><button class="btn sm" data-action="bulk-add">Ajouter ces lignes</button></div>';
@@ -489,7 +540,7 @@ function viewProduits(){
 function render(){
   var app=$('#app');
   var body;
-  if(S.mode==='db'&&!S.user){app.innerHTML=(!S.authReady?'<p class="muted pad">Connexion…</p>':S.setup==='needed'?viewSetup():viewLogin());return}
+  if(S.mode==='db'&&!S.user){app.innerHTML=(!S.authReady?'<p class="muted pad">Connexion…</p>':S.setup==='needed'?viewSetup():adminSetupVisible()?viewAdminSetup():viewLogin());return}
   if(!S.loaded)body='<p class="muted pad">Chargement…</p>';
   else body=S.tab==='frigo'?viewFrigo():S.tab==='commande'?viewCommande():(canManage()?viewProduits():viewGate());
   app.innerHTML=head()+body;
@@ -599,13 +650,13 @@ function doLogin(){
   S.authErr='';
   auth.signInWithEmailAndPassword(EMAIL_TEAM,pw).then(function(){setTeamPw(pw)},function(e1){
     if(e1&&e1.code==='auth/network-request-failed')throw e1;
-    return auth.signInWithEmailAndPassword(EMAIL_MGR,pw);
+    return auth.signInWithEmailAndPassword(EMAIL_MGR,pw).catch(function(e2){if(e2&&e2.code==='auth/network-request-failed')throw e2;return auth.signInWithEmailAndPassword(EMAIL_ADM,pw)});
   }).catch(function(e){S.authErr=authMsg(e);render()});
 }
 function doUnlock(){
   var el=$('#gpw'),pw=el?el.value:'';if(!pw||!auth)return;
   S.gateErr='';
-  auth.signInWithEmailAndPassword(EMAIL_MGR,pw).catch(function(e){S.gateErr=authMsg(e);render()});
+  auth.signInWithEmailAndPassword(EMAIL_MGR,pw).catch(function(e1){if(e1&&e1.code==='auth/network-request-failed')throw e1;return auth.signInWithEmailAndPassword(EMAIL_ADM,pw)}).catch(function(e){S.gateErr=authMsg(e);render()});
 }
 function doLock(){
   var t=teamPw();S.tab='frigo';
@@ -615,8 +666,9 @@ function startSub(){
   stopSub();S.loaded=false;dbCol=fdb.collection(COLLECTION);
   loadT=setTimeout(function(){if(!S.loaded){S.loaded=true;S.banner='slow';render()}},10000);
   unsub=dbCol.onSnapshot(onSnap,function(){S.loaded=true;S.banner='slow';render()});
+  if(S.role==='admin')logUnsub=fdb.collection(LOGC).orderBy('t','desc').limit(300).onSnapshot(function(sn){S.log=sn.docs.map(function(d){return d.data()});if(editing())S.pendingRender=true;else render()},function(){});
 }
-function stopSub(){if(unsub){unsub();unsub=null}clearTimeout(loadT);dbCol=null}
+function stopSub(){if(unsub){unsub();unsub=null}if(logUnsub){logUnsub();logUnsub=null}S.log=[];clearTimeout(loadT);dbCol=null}
 function secAuth(){var a;try{a=firebase.app('sec')}catch(e){a=firebase.initializeApp(FIREBASE_CONFIG,'sec')}return a.auth()}
 function pwErr(e,fallback){var c=e&&e.code||'';
   if(c==='auth/weak-password')return '6 caractères minimum.';
@@ -651,8 +703,8 @@ function chgMgr(){
   if(n1.length<6)return m(false,'Nouveau mot de passe : 6 caractères minimum.');
   if(n1!==n2)return m(false,'Les deux nouveaux mots de passe ne correspondent pas.');
   var u=auth.currentUser;if(!u)return m(false,'Reconnecte-toi.');
-  u.reauthenticateWithCredential(firebase.auth.EmailAuthProvider.credential(EMAIL_MGR,cur)).then(function(){return u.updatePassword(n1)}).then(function(){
-    S.pwOpen=false;m(true,'Mot de passe gérant modifié.');
+  u.reauthenticateWithCredential(firebase.auth.EmailAuthProvider.credential(S.role==='admin'?EMAIL_ADM:EMAIL_MGR,cur)).then(function(){return u.updatePassword(n1)}).then(function(){
+    S.pwOpen=false;m(true,S.role==='admin'?'Mot de passe admin modifié.':'Mot de passe gérant modifié.');
   }).catch(function(e){m(false,pwErr(e,'Mot de passe actuel incorrect.'))});
 }
 function chgTeam(){
@@ -689,6 +741,7 @@ function click(a,el){
     case 'confirm-no':S.confirm=null;render();break;
     case 'login':doLogin();break;
     case 'setup':doSetup();break;
+    case 'adm-setup':doAdminSetup();break;
     case 'pw-toggle':S.pwOpen=!S.pwOpen;S.pwMsg=null;render();break;
     case 'chg-mgr':chgMgr();break;
     case 'chg-team':chgTeam();break;
@@ -696,7 +749,7 @@ function click(a,el){
     case 'lock':doLock();break;
     case 'logout':setTeamPw('');S.tab='frigo';if(auth)auth.signOut();break;
     case 'restart':S.confirm='restart';render();break;
-    case 'restart-yes':S.confirm=null;S.products.forEach(function(p){if(p.checked||p.stock!==0||p.skip){p.checked=false;p.skip=false;p.stock=0;queueWrite(p)}});render();flash('Nouvelle commande prête : recompte le stock');break;
+    case 'restart-yes':S.confirm=null;logAdd('recommencer','Nouvelle commande','');S.products.forEach(function(p){if(p.checked||p.stock!==0||p.skip){quiet[p.id]=1;p.checked=false;p.skip=false;p.stock=0;queueWrite(p)}});render();flash('Nouvelle commande prête : recompte le stock');break;
     case 'unchk':S.products.forEach(function(p){if(p.checked){p.checked=false;queueWrite(p)}});render();break;
     case 'pmode':S.pmode=el.dataset.m;render();break;
     case 'sup-up':supMove(id,-1);break;
@@ -777,15 +830,16 @@ function boot(){
   if(!FIREBASE_CONFIG.apiKey||!window.firebase){startLocal();return}
   try{firebase.initializeApp(FIREBASE_CONFIG);auth=firebase.auth();fdb=firebase.firestore()}catch(e){startLocal();return}
   S.mode='db';S.loaded=false;S.authReady=false;render();
-  fdb.collection(META).doc('setup').get().then(function(d){S.setup=d.exists?'ok':'needed'},function(){S.setup='ok'}).then(function(){
+  fdb.collection(META).doc('setup').get().then(function(d){S.setup=d.exists?'ok':'needed'},function(){S.setup='ok'}).then(function(){return fdb.collection(META).doc('admin').get().then(function(d){S.adminExists=d.exists},function(){S.adminExists=true})}).then(function(){
     auth.onAuthStateChanged(function(u){
       S.authReady=true;
-      if(u){S.user=u.email;S.role=(u.email===EMAIL_MGR)?'gerant':'equipe';S.authErr='';S.gateErr='';startSub()}
+      if(u){S.user=u.email;S.role=(u.email===EMAIL_ADM)?'admin':(u.email===EMAIL_MGR)?'gerant':'equipe';S.authErr='';S.gateErr='';startSub()}
       else{S.user=null;S.role='';stopSub();S.products=[];S.loaded=false}
       render();
     });
   });
 }
+window.addEventListener('hashchange',function(){if(!editing())render()});
 boot();
 })();
 </script>
