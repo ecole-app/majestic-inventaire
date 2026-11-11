@@ -370,7 +370,7 @@ function onSnap(snap){
   var wasLoaded=S.loaded;
   if(!snap.metadata.fromCache||snap.size>0){S.loaded=true;clearTimeout(loadT);if(S.banner==='slow')S.banner=''}
   if(!first&&editing())S.pendingRender=true;else render();
-  if(!wasLoaded&&S.loaded&&S.banner!=='slow'&&(S.role==='gerant'||S.role==='admin'))migrateCounted();
+  if(!wasLoaded&&S.loaded&&S.banner!=='slow'&&(S.role==='gerant'||S.role==='admin')){migrateCounted();loadTeamSecret()}
 }
 function migrateCounted(){
   fdb.collection(META).doc('counted').get().then(function(d){
@@ -635,7 +635,7 @@ function pwPanel(){
   if(S.pwMsg)h+='<div class="banner" style="margin:10px 0 0;'+(S.pwMsg.ok?'background:var(--ok-bg);color:var(--ok)':'')+'">'+esc(S.pwMsg.text)+'</div>';
   if(S.pwOpen){
     h+='<h3 style="margin:14px 0 8px">'+(S.role==='admin'?'Mot de passe admin':'Mot de passe gérant')+'</h3>'+inp('pc','Mot de passe actuel','password')+inp('pn1','Nouveau mot de passe','password')+inp('pn2','Confirmer le nouveau','password')+'<button class="btn sm" data-action="chg-mgr">Changer mon mot de passe</button>'+
-      '<h3 style="margin:18px 0 8px">Code équipe</h3>'+inp('tc0','Code équipe actuel','text')+inp('tc1','Nouveau code équipe','text')+'<button class="btn sm" data-action="chg-team">Changer le code équipe</button>'+
+      '<h3 style="margin:18px 0 8px">Code équipe</h3>'+(S.teamStored?'':inp('tc0','Code équipe actuel (une seule fois)','text'))+inp('tc1','Nouveau code équipe','text')+'<button class="btn sm" data-action="chg-team">Changer le code équipe</button>'+
       '<p class="muted small" style="margin:12px 0 0">Après un changement de code équipe, le personnel devra se reconnecter avec le nouveau code.</p>';
   }
   return h+'</div>';
@@ -909,7 +909,7 @@ function doSetup(){
   var sa=secAuth();
   auth.createUserWithEmailAndPassword(EMAIL_MGR,m1).then(function(){
     return sa.createUserWithEmailAndPassword(EMAIL_TEAM,t).then(function(){return sa.signOut()});
-  }).then(function(){return fdb.collection(META).doc('setup').set({done:true,at:Date.now()})}).then(function(){
+  }).then(function(){try{fdb.collection('commande_secret').doc('team').set({code:t}).catch(function(){})}catch(e){}}).then(function(){return fdb.collection(META).doc('setup').set({done:true,at:Date.now()})}).then(function(){
     S.setup='ok';S.setupBusy=false;setTeamPw(t);render();flash('Accès créés. Ajoute tes produits dans Paramètres.');
   }).catch(function(e){
     S.setupBusy=false;
@@ -929,15 +929,19 @@ function chgMgr(){
     S.pwOpen=false;m(true,S.role==='admin'?'Mot de passe admin modifié.':'Mot de passe gérant modifié.');
   }).catch(function(e){m(false,pwErr(e,'Mot de passe actuel incorrect.'))});
 }
+function loadTeamSecret(){S.teamStored=false;if(S.mode!=='db'||!fdb||!canManage())return;
+  fdb.collection('commande_secret').doc('team').get().then(function(d){if(d.exists&&d.data().code){S.teamStored=d.data().code;render()}}).catch(function(){})}
 function chgTeam(){
-  var old=(($('#tc0')||{}).value||'').trim(),nw=(($('#tc1')||{}).value||'').trim();
+  var old=S.teamStored||(($('#tc0')||{}).value||'').trim(),nw=(($('#tc1')||{}).value||'').trim();
   var m=function(ok,t){S.pwMsg={ok:ok,text:t};render()};
-  if(!old)return m(false,'Entre le code équipe actuel.');
+  if(!old)return m(false,'Entre le code équipe actuel (une seule fois).');
   if(nw.length<6)return m(false,'Nouveau code : 6 caractères minimum.');
   var sa=secAuth();
   sa.signInWithEmailAndPassword(EMAIL_TEAM,old).then(function(c){return c.user.updatePassword(nw)}).then(function(){return sa.signOut()}).then(function(){
-    if(teamPw()===old)setTeamPw(nw);S.pwOpen=false;m(true,'Code équipe modifié.');
-  }).catch(function(e){m(false,pwErr(e,'Code équipe actuel incorrect.'))});
+    if(teamPw()===old)setTeamPw(nw);S.teamStored=nw;S.pwOpen=false;
+    try{fdb.collection('commande_secret').doc('team').set({code:nw}).catch(function(){S.teamStored=false})}catch(e){}
+    m(true,'Code équipe modifié.');
+  }).catch(function(e){S.teamStored=false;m(false,pwErr(e,'Code équipe actuel incorrect.'))});
 }
 /* ---------- actions ---------- */
 function mutate(id,fn){var p=get(id);if(!p)return;fn(p);save(p)}
