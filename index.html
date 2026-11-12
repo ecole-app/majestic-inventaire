@@ -736,6 +736,7 @@ async function makePdf(g){
   var xQ=wp?W-M-238:W-M-96,xU=wp?W-M-228:W-M-85,xP=W-M-130,xV=W-M-80,xT=W-M-6,rgb=L.rgb,BLACK=rgb(0,0,0),GREY=rgb(.35,.35,.35);
   function T(t){return pf(t).replace(/[^\x20-\x7E -ÿŒœ‘’“”–—…€]/g,'')}
   function put(t,x,top,size,font,color,right){t=T(t);if(right)x-=font.widthOfTextAtSize(t,size);page.drawText(t,{x:x,y:H-top,size:size,font:font,color:color||BLACK})}
+  function wrapT(t,font,size,mw){var words=T(t).split(/\s+/),ls=[],cur='';words.forEach(function(w){while(font.widthOfTextAtSize(w,size)>mw&&w.length>1){var k=w.length-1;while(k>1&&font.widthOfTextAtSize(w.slice(0,k),size)>mw)k--;if(cur){ls.push(cur);cur=''}ls.push(w.slice(0,k));w=w.slice(k)}var t2=cur?cur+' '+w:w;if(cur&&font.widthOfTextAtSize(t2,size)>mw){ls.push(cur);cur=w}else cur=t2});if(cur)ls.push(cur);return ls.length?ls:['']}
   function hline(top,x1,x2,th,col){page.drawLine({start:{x:x1,y:H-top},end:{x:x2,y:H-top},thickness:th,color:col})}
   function tableHead(){
     page.drawRectangle({x:M,y:H-y-22.7,width:W-2*M,height:22.7,color:rgb(.92,.92,.92)});
@@ -758,15 +759,15 @@ async function makePdf(g){
   var lastR=null,gtot=0,ghtt=0,nop=0;
   g.lines.forEach(function(l){
     if(gfd&&l.p.rayon!==lastR){room(RH+17);put((l.p.rayon||'Autres').toUpperCase(),M+6,y+18,9,FB,rgb(.043,.478,.525));y+=25;lastR=l.p.rayon}
-    room(RH);
-    hline(y+RH,M,W-M,.6,rgb(.6,.6,.6));
+    var nls=wrapT(l.p.name,FB,11,xQ-(M+34)-24),rh=RH+(nls.length-1)*13;
+    room(rh);
+    hline(y+rh,M,W-M,.6,rgb(.6,.6,.6));
     var cb=form.createCheckBox('ok'+(++k));
     cb.addToPage(page,{x:M+5.7,y:H-(y+5.7)-14.17,width:14.17,height:14.17,borderWidth:1.2,borderColor:BLACK,backgroundColor:rgb(1,1,1)});
-    var nm=T(l.p.name),mw=xQ-(M+34)-24;while(nm.length>1&&FB.widthOfTextAtSize(nm,11)>mw)nm=nm.slice(0,-1);
-    put(nm,M+34,y+17,11,FB);
+    nls.forEach(function(t,ti){put(t,M+34,y+17+ti*13,11,FB)});
     put(fmt(l.c.order),xQ,y+17,11,F,null,true);put(uname(l.p.orderUnit,l.c.order),xU,y+17,11,F);
     if(wp){if(l.p.price!=null){var lt=l.c.order*l.p.price,lh=l.c.order*htOf(l.p);gtot+=lt;ghtt+=lh;put(eur(htOf(l.p)),xP,y+17,10,F,null,true);put(fmt(rateOf(l.p))+' %',xV,y+17,10,F,null,true);put(eur(lt),xT,y+17,11,F,null,true)}else nop++}
-    y+=RH;
+    y+=rh;
   });
   if(wp){room(RH*3+20);var lx=xV+4;
     put('Total HT',lx,y+18,11,F,null,true);put(eur(ghtt),xT,y+18,11,F,null,true);
@@ -790,6 +791,7 @@ async function makeInvPdf(){
   var xB=W-M-132,xS=W-M-118;
   function T(t){return pf(t).replace(/[^\x20-\x7E -ÿŒœ‘’“”–—…€]/g,'')}
   function put(t,x,top,size,font,color,right){t=T(t);if(right)x-=font.widthOfTextAtSize(t,size);page.drawText(t,{x:x,y:H-top,size:size,font:font,color:color||BLACK})}
+  function wrapT(t,font,size,mw){var words=T(t).split(/\s+/),ls=[],cur='';words.forEach(function(w){while(font.widthOfTextAtSize(w,size)>mw&&w.length>1){var k=w.length-1;while(k>1&&font.widthOfTextAtSize(w.slice(0,k),size)>mw)k--;if(cur){ls.push(cur);cur=''}ls.push(w.slice(0,k));w=w.slice(k)}var t2=cur?cur+' '+w:w;if(cur&&font.widthOfTextAtSize(t2,size)>mw){ls.push(cur);cur=w}else cur=t2});if(cur)ls.push(cur);return ls.length?ls:['']}
   function head(){
     page.drawRectangle({x:M,y:H-y-22.7,width:W-2*M,height:22.7,color:rgb(.92,.92,.92)});
     put('N°',M+6,y+15.3,9,FB);put('PRODUIT',M+34,y+15.3,9,FB);put('BESOIN',xB,y+15.3,9,FB,null,true);put('STOCK COMPTÉ',xS,y+15.3,9,FB);
@@ -804,16 +806,16 @@ async function makeInvPdf(){
   var list=vis();
   top(true);
   list.forEach(function(p,i){
-    if(y+RH>H-M-22)top(false);
-    page.drawLine({start:{x:M,y:H-y-RH},end:{x:W-M,y:H-y-RH},thickness:.6,color:rgb(.6,.6,.6)});
+    var nls=wrapT(p.name,FB,11,xB-(M+34)-70),rh=RH+(nls.length-1)*13;
+    if(y+rh>H-M-22)top(false);
+    page.drawLine({start:{x:M,y:H-y-rh},end:{x:W-M,y:H-y-rh},thickness:.6,color:rgb(.6,.6,.6)});
     put(String(i+1),M+6,y+16,10,F,GREY);
-    var nm=T(p.name),mw=xB-(M+34)-70;while(nm.length>1&&FB.widthOfTextAtSize(nm,11)>mw)nm=nm.slice(0,-1);
-    put(nm,M+34,y+16,11,FB);
+    nls.forEach(function(t,ti){put(t,M+34,y+16+ti*13,11,FB)});
     put(qty(needOf(p),p.unit),xB,y+16,10,F,null,true);
     if(p.skip)put('Passé',xS,y+16,10,F,GREY);
     else if(p.stock!=null)put(fmtF(p.stock)+' '+uname(p.unit,p.stock),xS,y+16,10,F);
     else page.drawRectangle({x:xS,y:H-y-RH+5,width:104,height:14,borderColor:rgb(.55,.55,.55),borderWidth:.8});
-    y+=RH;
+    y+=rh;
   });
   pages.forEach(function(pg,i){var t='Page '+(i+1)+' / '+pages.length+' · '+list.length+' produit'+(list.length>1?'s':'');pg.drawText(T(t),{x:W/2-F.widthOfTextAtSize(T(t),8)/2,y:22.7,size:8,font:F,color:rgb(.47,.47,.47)})});
   return await doc.save();
